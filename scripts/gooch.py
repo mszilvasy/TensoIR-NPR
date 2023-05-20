@@ -305,7 +305,7 @@ if __name__ == "__main__":
     args.if_save_albedo = True
     args.if_save_albedo_gamma_corrected = True
     args.if_save_xys = True
-    args.debug_light_size = 0.1
+    args.debug_light_size = 0.02
     args.acc_mask_threshold = 0.5
     args.if_render_normal = True
     args.vis_equation = 'nerv'
