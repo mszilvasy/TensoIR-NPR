@@ -1,6 +1,6 @@
 dataset_name = tensoIR_unknown_rotated_lights
 datadir = ./data/TensoIR_Synthetic/armadillo
-hdrdir = ./data/Environment_Maps/high_res_envmaps_2k
+hdrdir = ./data/Environment_Maps/high_res_envmaps_1k
 expname = armadillo_ds_1
 basedir = ./log/log_rotated_multi_lights
 add_timestamp = 1
@@ -8,7 +8,7 @@ downsample_train = 1
 downsample_test = 1
 
 n_iters = 80000
-batch_size = 4096
+batch_size = 1024
 lr_decay_iters = 80000
 
 N_voxel_init = 2097152 # 128**3

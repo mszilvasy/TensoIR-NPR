@@ -353,8 +353,8 @@ if __name__ == "__main__":
 
     # The following args are not defined in opt.py
     args.if_save_rgb = False
-    args.if_save_depth = False
-    args.if_save_acc = True
+    args.if_save_depth = True
+    args.if_save_acc = False
     args.if_save_rgb_video = False
     args.if_save_relight_rgb = True
     args.if_save_albedo = True

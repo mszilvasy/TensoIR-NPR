@@ -1,6 +1,6 @@
 dataset_name = tensoIR_unknown_rotated_lights
 datadir = ./data/TensoIR_Synthetic/lego
-hdrdir = ./data/Environment_Maps/high_res_envmaps_2k
+hdrdir = ./data/Environment_Maps/high_res_envmaps_1k
 expname = lego_ds_1
 basedir = ./log/log_rotated_multi_lights
 add_timestamp = 1
@@ -8,7 +8,7 @@ downsample_train = 1
 downsample_test = 1
 
 n_iters = 80000
-batch_size = 4096
+batch_size = 1024
 lr_decay_iters = 80000
 
 N_voxel_init = 2097152 # 128**3
@@ -47,9 +47,9 @@ normals_diff_weight = 0.001
 normals_orientation_weight = 0.001
 rgb_brdf_weight = 0.2
 
-batch_size_test = 4096
+batch_size_test = 1024
 light_name = sunset
-albedo_smoothness_loss_weight = 0.001
+albedo_smoothness_loss_weight = 0.002
 roughness_smoothness_loss_weight = 0.001
 
 L1_weight_inital = 8e-5

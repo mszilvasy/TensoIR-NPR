@@ -127,9 +127,6 @@ class TensoIR_Dataset_simple(Dataset):
             render_poses = np.concatenate([render_poses, np.broadcast_to(poses[0,:3,-1:], render_poses[:,:3,-1:].shape)], -1)
             render_poses = render_poses[...,:4]
 
-
-
-
             img_wh = self.img_wh
             # Get ray directions for all pixels, same for all images (with same H, W, focal)
             fov = self.transforms_json["camera_angle_x"]
