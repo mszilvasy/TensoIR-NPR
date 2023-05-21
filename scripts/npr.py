@@ -7,6 +7,8 @@ import numpy as np
 from opt import config_parser
 import torch
 import torch.nn as nn
+
+from shaders import shader_dict
 from utils import visualize_depth_numpy
 # ----------------------------------------
 # use this if loaded checkpoint is generate from single-light or rotated multi-light setting 
@@ -46,23 +48,17 @@ def gooch(dataset, args):
     aligned_albedo_list = []
     roughness_list = []
 
-    gooch_list = []
     xyz_list = []
     x_list, y_list, z_list = [], [], []
+
+    shader_list = [shader_dict[shader](args, device) for shader in args.shaders]
+    shader_lists, shader_debug_lists = [], []
 
     #### 
     light_rotation_idx = 0
     ####
 
-    # global_rescale_value_single, global_rescale_value_three = compute_rescale_ratio(tensoIR, dataset)
-    # rescale_value = global_rescale_value_three
-
     light_pos = torch.Tensor(args.light_pos).to(device)
-    light_dir = F.normalize(light_pos, dim=-1)
-    light_rgb = torch.Tensor(args.light_rgb).to(device)
-    k_blue = torch.Tensor([0.0, 0.0, args.gooch_b]).to(device)
-    k_yellow = torch.Tensor([args.gooch_y, args.gooch_y, 0.0]).to(device)
-
     light_debug = args.light == 'point' and len(args.light_debug) == 3
     light_debug_color = torch.Tensor(args.light_debug).cpu() if light_debug else None
 
@@ -77,8 +73,9 @@ def gooch(dataset, args):
 
         light_idx = torch.zeros((frame_rays.shape[0], 1), dtype=torch.int).to(device).fill_(light_rotation_idx)
 
-        rgb_map, depth_map, normal_map, albedo_map, roughness_map, fresnel_map, normals_diff_map, acc_map, gooch_map, \
-            normals_orientation_loss_map, xyz_map = [], [], [], [], [], [], [], [], [], [], []
+        rgb_map, depth_map, normal_map, albedo_map, roughness_map, fresnel_map, normals_diff_map, acc_map, \
+            normals_orientation_loss_map, xyz_map = [], [], [], [], [], [], [], [], [], []
+        shader_maps, shader_debug_maps = [], []
         light_debug_mask = []
 
         chunk_idxs = torch.split(torch.arange(frame_rays.shape[0]), args.batch_size)  # choose the first light idx
@@ -88,7 +85,6 @@ def gooch(dataset, args):
                     fresnel_chunk, acc_chunk, *temp \
                     = tensoIR(frame_rays[chunk_idx], light_idx[chunk_idx], is_train=False, white_bg=True, ndc_ray=False, N_samples=-1)
 
-            gooch_chunk = torch.ones_like(rgb_chunk)
             # gt_albedo_chunk = gt_albedo[chunk_idx] # use GT to debug
             acc_chunk_mask = (acc_chunk > args.acc_mask_threshold)
             rays_o_chunk, rays_d_chunk = frame_rays[chunk_idx][:, :3], frame_rays[chunk_idx][:, 3:]
@@ -102,28 +98,14 @@ def gooch(dataset, args):
             masked_light_idx_chunk = light_idx[chunk_idx][acc_chunk_mask]  # [surface_point_num, 1]
             masked_xyz_chunk = surface_xyz_chunk[acc_chunk_mask]
 
-            #gooch_chunk.fill_(1.0)
+            normal_chunk = safe_l2_normalize(normal_chunk, dim=-1)
+            view_chunk = -rays_d_chunk  # [bs, 3]
+            view_chunk = safe_l2_normalize(view_chunk, dim=-1)  # [bs, 3]
 
-            surf2c = -rays_d_chunk[acc_chunk_mask]      # [surface_point_num, 3]
-            surf2c = safe_l2_normalize(surf2c, dim=-1)  # [surface_point_num, 3]
+            shader_chunks = torch.stack([shader(
+                acc_chunk_mask, surface_xyz_chunk, depth_chunk, view_chunk, normal_chunk, albedo_chunk, roughness_chunk
+            ) for shader in shader_list], dim=0).to(device)  # [shader_num, bs, 3]
 
-            cos = torch.sum(masked_normal_chunk * light_dir[None, :], dim=-1, keepdim=True)  # [surface_point_num, 1]
-            interp = (1.0 + cos) / 2.0  # [surface_point_num, 1]
-
-            # Gooch shading
-            # masked_albedo_chunk_rescaled = masked_albedo_chunk * rescale_value
-            k_cool = k_blue[None, :] + args.gooch_alpha * masked_albedo_chunk
-            k_warm = k_yellow[None, :] + args.gooch_beta * masked_albedo_chunk
-            surface_gooch_chunk = light_rgb[None, :] * (interp * k_warm + (1.0 - interp) * k_cool)  # [bs, 3]
-
-            # Tone-mapping
-            surface_gooch_chunk = torch.clamp(surface_gooch_chunk, min=0.0, max=1.0)
-            # Colorspace transform
-            if surface_gooch_chunk.shape[0] > 0:
-                surface_gooch_chunk = linear2srgb_torch(surface_gooch_chunk)
-            gooch_chunk[acc_chunk_mask] = surface_gooch_chunk
-
-            gooch_map.append(gooch_chunk.cpu().detach())
             rgb_map.append(rgb_chunk.cpu().detach())
             depth_map.append(depth_chunk.cpu().detach())
             acc_map.append(acc_chunk.cpu().detach())
@@ -131,6 +113,7 @@ def gooch(dataset, args):
             albedo_map.append(albedo_chunk.cpu().detach())
             roughness_map.append(roughness_chunk.cpu().detach())
             xyz_map.append(surface_xyz_chunk.cpu().detach())
+            shader_maps.append(shader_chunks.cpu().detach())
 
             if light_debug:
                 o = rays_o_chunk - light_pos[None, :]  # [bs, 3]
@@ -155,7 +138,6 @@ def gooch(dataset, args):
                 )
                 light_debug_mask.append(light_debug_chunk.cpu().detach())
 
-        gooch_map = torch.cat(gooch_map, dim=0)
         rgb_map = torch.cat(rgb_map, dim=0)
         depth_map = torch.cat(depth_map, dim=0)
         acc_map = torch.cat(acc_map, dim=0)
@@ -164,13 +146,28 @@ def gooch(dataset, args):
         albedo_map = torch.cat(albedo_map, dim=0)
         roughness_map = torch.cat(roughness_map, dim=0)
         xyz_map = torch.cat(xyz_map, dim=0)
-        if light_debug:
-            light_debug_mask = torch.squeeze(torch.cat(light_debug_mask, dim=0), dim=1)
-            gooch_map[light_debug_mask] = light_debug_color
+        shader_maps = torch.cat(shader_maps, dim=1)
 
-        gooch_map = (gooch_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
-        gooch_list.append(gooch_map)
-        imageio.imwrite(os.path.join(cur_dir_path, 'gooch.png'), gooch_map)
+        if light_debug:
+            shader_debug_maps = shader_maps.clone()
+            light_debug_mask = torch.cat(light_debug_mask, dim=0).expand_as(shader_debug_maps)
+            shader_debug_maps[light_debug_mask] = light_debug_color.expand_as(shader_debug_maps)[light_debug_mask]
+
+            shaders_debug_list = []
+            for i in range(shader_debug_maps.shape[0]):
+                shader_debug_map = shader_debug_maps[i]
+                shader_debug_map = (shader_debug_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
+                shaders_debug_list.append(shader_debug_map)
+                imageio.imwrite(os.path.join(cur_dir_path, f'{shader_list[i].name}_debug.png'), shader_debug_map)
+            shader_debug_lists.append(shaders_debug_list)
+
+        shaders_list = []
+        for i in range(shader_maps.shape[0]):
+            shader_map = shader_maps[i]  # [bs, 3]
+            shader_map = (shader_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
+            shaders_list.append(shader_map)
+            imageio.imwrite(os.path.join(cur_dir_path, f'{shader_list[i].name}.png'), shader_map)
+        shader_lists.append(shaders_list)
 
         rgb_map = (rgb_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
         rgb_frames_list.append(rgb_map)
@@ -224,7 +221,6 @@ def gooch(dataset, args):
             imageio.imwrite(os.path.join(cur_dir_path, 'roughness.png'), (roughness_map).astype('uint8'))
             roughness_list.append(roughness_map.astype('uint8'))
         if args.if_render_normal:
-            normal_map = F.normalize(normal_map, dim=-1)
             normal_rgb_map = normal_map * 0.5 + 0.5
             normal_rgb_map = (normal_rgb_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
             normal_rgb_map = np.concatenate([normal_rgb_map, acc_map], axis=2)
@@ -282,7 +278,12 @@ def gooch(dataset, args):
     if args.render_video:
         video_path = os.path.join(args.geo_buffer_path,'video')
         os.makedirs(video_path, exist_ok=True)
-        imageio.mimsave(os.path.join(video_path, 'gooch.mp4'), np.stack(gooch_list), fps=24, macro_block_size=1)
+        for i in range(len(shader_list)):
+            imageio.mimsave(os.path.join(video_path, f'{shader_list[i].name}.mp4'),
+                            np.stack([shader[i] for shader in shader_lists]), fps=24, macro_block_size=1)
+            if light_debug:
+                imageio.mimsave(os.path.join(video_path, f'{shader_list[i].name}_debug.mp4'),
+                                np.stack(shader_debug[i] for shader_debug in shader_debug_lists), fps=24, macro_block_size=1)
 
 
 if __name__ == "__main__":
@@ -304,8 +305,8 @@ if __name__ == "__main__":
     args.if_save_relight_rgb = True
     args.if_save_albedo = True
     args.if_save_albedo_gamma_corrected = True
-    args.if_save_xys = True
-    args.debug_light_size = 0.02
+    args.if_save_xys = False
+    args.debug_light_size = 0.005
     args.acc_mask_threshold = 0.5
     args.if_render_normal = True
     args.vis_equation = 'nerv'

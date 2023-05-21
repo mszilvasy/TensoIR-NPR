@@ -212,17 +212,27 @@ def config_parser(cmd=None):
 
     parser.add_argument("--pose", type=str, default="test", choices=["test", "render"])
 
+    parser.add_argument("--shaders", type=str, action="append")
+
     parser.add_argument("--light", type=str, default="infinity", choices=["point", "infinity"])
     parser.add_argument("--light_pos", type=float, action="append")
     parser.add_argument("--light_rgb", type=float, action="append")
 
+    parser.add_argument("--shininess", type=float)
+
     parser.add_argument("--light_debug", type=float, action="append", default=[])
+
+    # Blinn-Phong
+    parser.add_argument("--blinn_phong_ambience", type=float)
+    parser.add_argument("--blinn_phong_diffuse", type=float)
+    parser.add_argument("--blinn_phong_specular", type=float)
 
     # Gooch
     parser.add_argument("--gooch_b", type=float)
     parser.add_argument("--gooch_y", type=float)
     parser.add_argument("--gooch_alpha", type=float)
     parser.add_argument("--gooch_beta", type=float)
+    parser.add_argument("--gooch_specular", type=float, default=0.0)
 
     if cmd is not None:
         return parser.parse_args(cmd)

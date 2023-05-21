@@ -6,7 +6,7 @@ basedir = ./log/log_relighting_test
 add_timestamp = 1
 downsample_train = 1
 downsample_test = 1
-geo_buffer_path = ./npr/gooch/lego
+geo_buffer_path = ./npr/lego
 
 n_iters = 80000
 batch_size = 4096
@@ -57,12 +57,21 @@ light_name = sunset
 albedo_smoothness_loss_weight = 0.0001
 roughness_smoothness_loss_weight = 0.0002
 
-light = point
-light_pos = [1.0, 1.0, 0.0]
-light_rgb = [1.0, 1.0, 1.0]
-light_debug = [0.0, 1.0, 0.0]
+shaders = [specular_only, blinn_phong, gooch]
 
-gooch_b = 0.55
-gooch_y = 0.3
+light = point
+light_pos = [-0.5, 1.2, 0.5]
+light_rgb = [1.0, 1.0, 1.0]
+light_debug = [1.0, 1.0, 1.0]
+
+shininess = 20.0
+
+blinn_phong_ambience = 0.1
+blinn_phong_diffuse = 1.0
+blinn_phong_specular = 0.8
+
+gooch_b = 0.5
+gooch_y = 0.25
 gooch_alpha = 0.25
-gooch_beta = 0.6
+gooch_beta = 0.55
+gooch_specular = 1.0
