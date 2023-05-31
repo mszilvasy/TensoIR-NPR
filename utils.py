@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 import torchvision.transforms as T
 import torch.nn.functional as F
+import kornia.filters as K
 import scipy.signal
 
 mse2psnr = lambda x : -10. * torch.log(x) / torch.log(torch.Tensor([10.]))
@@ -241,3 +242,6 @@ def synchronize():
         return
     dist.barrier()
 
+def bilateral_filter(src, d, sigma_color, sigma_space):
+    src = src.unsqueeze(0).unsqueeze(0)
+    return K.bilateral_blur(src, d, sigma_color, sigma_space).squeeze(0).squeeze(0)

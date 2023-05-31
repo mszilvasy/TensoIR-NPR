@@ -6,7 +6,7 @@ basedir = ./log/log_relighting_test
 add_timestamp = 1
 downsample_train = 1.5
 downsample_test = 1.5
-geo_buffer_path = ./npr/gooch/truck
+geo_buffer_path = ./npr/truck
 
 n_iters = 80000
 batch_size = 1024
@@ -56,10 +56,21 @@ rm_weight_mask_thre = 1e-4
 TV_weight_density = 0.05
 TV_weight_app = 0.005
 
-light_dir = [1.0, -1.0, 0.2]
-light_rgb = [1.0, 1.0, 1.0]
+shaders = [blinn_phong, gooch]
 
-gooch_b = 0.2
+light = point
+light_pos = [1.0, 0.6, 0.0]
+light_rgb = [1.0, 1.0, 1.0]
+light_debug = [1.0, 1.0, 1.0]
+
+shininess = 26.0
+
+blinn_phong_ambience = 0.1
+blinn_phong_diffuse = 1.0
+blinn_phong_specular = 0.6
+
+gooch_b = 0.15
 gooch_y = 0.15
-gooch_alpha = 0.35
-gooch_beta = 0.7
+gooch_alpha = 0.15
+gooch_beta = 0.4
+gooch_specular = 0.1

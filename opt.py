@@ -218,12 +218,18 @@ def config_parser(cmd=None):
     parser.add_argument("--light_pos", type=float, action="append")
     parser.add_argument("--light_rgb", type=float, action="append")
 
+    parser.add_argument("--ambience", type=float)
     parser.add_argument("--shininess", type=float)
+
+    parser.add_argument("--edge_detection", type=str, default="none",
+                        choices=["none", "scan", "normals", "canny", "sobel"])
+    parser.add_argument("--edge_detection_args", type=float, action="append")
+    parser.add_argument("--edge_detection_depth_modifier", type=float, default=1.0)
+    parser.add_argument("--normal_edges", type=float, default=0.0)
 
     parser.add_argument("--light_debug", type=float, action="append", default=[])
 
     # Blinn-Phong
-    parser.add_argument("--blinn_phong_ambience", type=float)
     parser.add_argument("--blinn_phong_diffuse", type=float)
     parser.add_argument("--blinn_phong_specular", type=float)
 
@@ -233,6 +239,9 @@ def config_parser(cmd=None):
     parser.add_argument("--gooch_alpha", type=float)
     parser.add_argument("--gooch_beta", type=float)
     parser.add_argument("--gooch_specular", type=float, default=0.0)
+
+    # Toon
+    parser.add_argument("--toon_cutoff", type=float, default=0.5)
 
     if cmd is not None:
         return parser.parse_args(cmd)

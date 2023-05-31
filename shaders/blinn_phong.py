@@ -4,10 +4,12 @@ from shaders.shader import Shader
 
 
 class BlinnPhong(Shader):
+
+    # Blinn-Phong shader
     def __init__(self, args, device):
         super().__init__(args, device)
         self.name = 'blinn_phong'
-        self.ambience = args.blinn_phong_ambience
+        self.ambience = args.ambience
         self.diffuse_intensity = args.blinn_phong_diffuse
         self.specular_intensity = args.blinn_phong_specular
 

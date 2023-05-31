@@ -1,3 +1,5 @@
+import torch
+
 from models.relight_utils import *
 
 
@@ -18,6 +20,11 @@ class Shader:
             return safe_l2_normalize(self.light_pos[None, :] - pos, dim=-1)
 
     def blinn_phong_specular(self, view, normal, roughness, l):
+        mask = torch.sum(normal * l, dim=-1) >= 0.0
         h = safe_l2_normalize(l + view, dim=-1)
-        nh = torch.clamp(torch.sum(normal * h, dim=-1, keepdim=True), min=0.0)  # [bs, 1]
-        return self.light_rgb[None, :] * (1.0 - roughness) * (nh ** self.shininess)
+        cos = torch.zeros_like(normal)
+        cos[mask] = torch.clamp(torch.sum(normal * h, dim=-1, keepdim=True), min=0.0)[mask]  # [bs, 1]
+        return self.light_rgb[None, :] * (1.0 - roughness) * (cos ** self.shininess)
+
+    def draw_edges(self, rgb, depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask):
+        return rgb

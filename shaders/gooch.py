@@ -4,9 +4,12 @@ from shaders.shader import Shader
 
 
 class Gooch(Shader):
+
+    # Gooch shader
     def __init__(self, args, device):
         super().__init__(args, device)
         self.name = 'gooch'
+        self.normal_edges = args.normal_edges
         self.k_blue = torch.Tensor([0.0, 0.0, args.gooch_b]).to(device)
         self.k_yellow = torch.Tensor([args.gooch_y, args.gooch_y, 0.0]).to(device)
         self.alpha = args.gooch_alpha
@@ -15,7 +18,7 @@ class Gooch(Shader):
 
     def __call__(self, mask, pos, depth, view, normal, albedo, roughness):
 
-        gooch = torch.zeros_like(pos)
+        gooch = torch.ones_like(pos)
         l = super().light_dir(pos)
         cos = torch.sum(normal[mask] * l[mask], dim=-1, keepdim=True)  # [bs, 1]
         interp = (1.0 + cos) / 2.0  # [bs, 1]
@@ -35,3 +38,8 @@ class Gooch(Shader):
         gooch[mask] = surface_gooch
 
         return gooch  # [bs, 3]
+
+    def draw_edges(self, rgb, depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask):
+        rgb[normal_edge_mask] += self.normal_edges
+        rgb[depth_edge_mask] = torch.zeros_like(rgb[depth_edge_mask])
+        return torch.clamp(rgb, min=0.0, max=1.0)

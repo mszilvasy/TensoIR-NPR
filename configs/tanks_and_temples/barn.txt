@@ -39,8 +39,8 @@ numLgtSGs = 128
 
 normals_kind = derived_plus_predicted
 
-normals_diff_weight = 0.002 # try different values on your own data if it does not work well
-normals_orientation_weight = 0.002
+normals_diff_weight = 0.005 # try different values on your own data if it does not work well
+normals_orientation_weight = 0.005
 rgb_brdf_weight = 0.2
 
 batch_size_test = 720
@@ -54,4 +54,3 @@ rm_weight_mask_thre = 1e-4
 
 TV_weight_density = 0.1
 TV_weight_app = 0.01
-

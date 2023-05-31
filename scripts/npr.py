@@ -4,12 +4,14 @@ from tqdm import tqdm
 import imageio
 import numpy as np
 
+from models.scan_edges import ScanEdges
 from opt import config_parser
 import torch
 import torch.nn as nn
+import kornia.filters as K
 
 from shaders import shader_dict
-from utils import visualize_depth_numpy
+from utils import visualize_depth_numpy, bilateral_filter
 # ----------------------------------------
 # use this if loaded checkpoint is generate from single-light or rotated multi-light setting 
 from models.tensoRF_rotated_lights import raw2alpha, TensorVMSplit, AlphaGridMask
@@ -27,7 +29,7 @@ from models.relight_utils import Environment_Light
 from renderer import compute_rescale_ratio
 
 @torch.no_grad()
-def gooch(dataset, args):
+def npr(dataset, args):
 
     if not os.path.exists(args.ckpt):
         print('the checkpoint path for tensoIR does not exists!!!')
@@ -38,6 +40,9 @@ def gooch(dataset, args):
     kwargs.update({'device': device})
     tensoIR = eval(args.model_name)(**kwargs)
     tensoIR.load(ckpt)
+
+    scan_edges = ScanEdges(**kwargs)
+    scan_edges.load(ckpt)
 
     W, H = dataset.img_wh
     near_far = dataset.near_far
@@ -50,6 +55,8 @@ def gooch(dataset, args):
 
     xyz_list = []
     x_list, y_list, z_list = [], [], []
+
+    edge_map_list, edge_mask_list = [], []
 
     shader_list = [shader_dict[shader](args, device) for shader in args.shaders]
     shader_lists, shader_debug_lists = [], []
@@ -74,7 +81,8 @@ def gooch(dataset, args):
         light_idx = torch.zeros((frame_rays.shape[0], 1), dtype=torch.int).to(device).fill_(light_rotation_idx)
 
         rgb_map, depth_map, normal_map, albedo_map, roughness_map, fresnel_map, normals_diff_map, acc_map, \
-            normals_orientation_loss_map, xyz_map = [], [], [], [], [], [], [], [], [], []
+            normals_orientation_loss_map, xyz_map, view_map = [], [], [], [], [], [], [], [], [], [], []
+        depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask = [], [], [], []
         shader_maps, shader_debug_maps = [], []
         light_debug_mask = []
 
@@ -113,6 +121,7 @@ def gooch(dataset, args):
             albedo_map.append(albedo_chunk.cpu().detach())
             roughness_map.append(roughness_chunk.cpu().detach())
             xyz_map.append(surface_xyz_chunk.cpu().detach())
+            view_map.append(view_chunk.cpu().detach())
             shader_maps.append(shader_chunks.cpu().detach())
 
             if light_debug:
@@ -146,8 +155,69 @@ def gooch(dataset, args):
         albedo_map = torch.cat(albedo_map, dim=0)
         roughness_map = torch.cat(roughness_map, dim=0)
         xyz_map = torch.cat(xyz_map, dim=0)
+        view_map = torch.cat(view_map, dim=0)
         shader_maps = torch.cat(shader_maps, dim=1)
 
+        # Edge detection
+        if args.edge_detection != 'none':
+
+            depth_min = depth_map.min()
+            depth_max = 2.0 * depth_map.max()
+            normalized_depth_map = torch.full_like(depth_map, depth_max)
+            normalized_depth_map[acc_map_mask] = depth_map[acc_map_mask]
+            normalized_depth_map = (normalized_depth_map - depth_min) / (depth_max - depth_min)
+            normalized_depth_map = normalized_depth_map.reshape(1, 1, H, W)
+
+            modified_depth_map = 1.0 - normalized_depth_map
+            modified_depth_map = modified_depth_map ** args.edge_detection_depth_modifier
+            modified_normal_map = normal_map.permute(1, 0).reshape(1, 3, H, W)
+            modified_normal_map = modified_normal_map * modified_depth_map.expand(-1, 3, -1, -1)
+
+            if args.edge_detection == 'scan':
+                depth_edge_mask = scan_edges(frame_rays, (W, H)).reshape(H*W).cpu()  # [H*W]
+                depth_edge_map = torch.where(depth_edge_mask, torch.zeros((H*W,)), torch.ones((H*W,)))  # [H*W]
+                normal_edge_mask = torch.full((H * W,), False)  # [H*W]
+                normal_edge_map = torch.zeros((H * W,))  # [H*W]
+
+            elif args.edge_detection == 'normals':
+                depth_edge_map = torch.where(
+                    acc_map_mask, torch.abs(torch.sum(view_map * normal_map, dim=-1)), torch.ones((H*W,)))  # [H*W]
+                depth_edge_mask = (depth_edge_map < args.edge_detection_args[0])  # [H*W]
+                normal_edge_map = torch.zeros((H*W,))  # [H*W]
+                normal_edge_mask = torch.full((H*W,), False)  # [H*W]
+
+            elif args.edge_detection == 'canny':
+                depth_edge_map, depth_edge_mask = K.canny(
+                    modified_depth_map,
+                    low_threshold=args.edge_detection_args[0],
+                    high_threshold=args.edge_detection_args[1]
+                )  # [1, 1, H, W]
+                depth_edge_map = depth_edge_map.view(-1)  # [H*W]
+                depth_edge_mask = depth_edge_mask.bool().view(-1)  # [H*W]
+
+                normal_edge_map, normal_edge_mask = K.canny(
+                    modified_normal_map,
+                    low_threshold=args.edge_detection_args[2],
+                    high_threshold=args.edge_detection_args[3]
+                )  # [1, 1, H, W]
+                normal_edge_map = normal_edge_map.view(-1)  # [H*W]
+                normal_edge_mask = normal_edge_mask.bool().view(-1)  # [H*W]
+
+            elif args.edge_detection == 'sobel':
+                depth_edge_map = K.sobel(modified_depth_map).view(-1)  # [H*W]
+                depth_edge_mask = depth_edge_map > args.edge_detection_args[0]  # [H*W]
+
+                normal_edge_map = K.sobel(modified_normal_map).view(3, -1)  # [3, H*W]
+                normal_edge_map = torch.sum(normal_edge_map, dim=0)  # [H*W]
+                normal_edge_mask = normal_edge_map > args.edge_detection_args[1]  # [H*W]
+
+            # Draw edges
+            for i in range(len(shader_list)):
+                shader_maps[i] = shader_list[i].draw_edges(
+                    shader_maps[i], depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask
+                )
+
+        # Draw renders
         if light_debug:
             shader_debug_maps = shader_maps.clone()
             light_debug_mask = torch.cat(light_debug_mask, dim=0).expand_as(shader_debug_maps)
@@ -186,9 +256,11 @@ def gooch(dataset, args):
         if args.if_save_rgb:
             imageio.imwrite(os.path.join(cur_dir_path, 'rgb.png'), rgb_map)
         if args.if_save_depth:
+            depth_map = np.concatenate([depth_map, acc_map], axis=2)
+            # depth_map, _ = visualize_depth_numpy(normalized_depth_map.reshape(H, W, 1).numpy(), near_far)
             imageio.imwrite(os.path.join(cur_dir_path, 'depth.png'), depth_map)
         if args.if_save_acc:
-            imageio.imwrite(os.path.join(cur_dir_path, 'acc.png'), acc_map)
+            imageio.imwrite(os.path.join(cur_dir_path, 'acc.png'), acc_map.repeat(3, axis=-1))
         if args.if_save_albedo:
             gt_albedo_reshaped = gt_albedo.reshape(H, W, 3).cpu()
             albedo_map = albedo_map.reshape(H, W, 3)
@@ -230,7 +302,7 @@ def gooch(dataset, args):
             xyz_map = np.concatenate([xyz_map, acc_map], axis=2)
             x_map, y_map, z_map = xyz_map[:, :, 0:1], xyz_map[:, :, 1:2], xyz_map[:, :, 2:3]  # [H, W, 1]
             x_map, y_map, z_map = np.repeat(x_map, 3, axis=2), np.repeat(y_map, 3, axis=2), np.repeat(z_map, 3, axis=2)
-            x_map, y_map, z_map = np.concatenate([x_map, acc_map], axis=2), np.concatenate([y_map, acc_map], axis=2),\
+            x_map, y_map, z_map = np.concatenate([x_map, acc_map], axis=2), np.concatenate([y_map, acc_map], axis=2), \
                 np.concatenate([z_map, acc_map], axis=2)  # [H, W, 4]
 
             imageio.imwrite(os.path.join(cur_dir_path, 'xyz.png'), xyz_map)
@@ -242,15 +314,28 @@ def gooch(dataset, args):
             x_list.append(x_map)
             y_list.append(y_map)
             z_list.append(z_map)
+        if args.if_save_edges and args.edge_detection != 'none':
+            edge_map = torch.full((H*W,), 0.5)
+            edge_map += normal_edge_map / 2.0
+            edge_map -= depth_edge_map / 2.0
+            edge_map = (edge_map.reshape(H, W, 1).expand(-1, -1, 3).numpy() * 255).astype('uint8')
+            imageio.imwrite(os.path.join(cur_dir_path, 'edge map.png'), edge_map)
+            edge_map_list.append(edge_map)
+
+            edge_mask = torch.full((H*W, 3), 0.5)
+            edge_mask[normal_edge_mask] = torch.ones_like(edge_mask)[normal_edge_mask]
+            edge_mask[depth_edge_mask] = torch.zeros_like(edge_mask)[depth_edge_mask]
+            edge_mask = (edge_mask.reshape(H, W, 3).numpy() * 255).astype('uint8')
+            imageio.imwrite(os.path.join(cur_dir_path, 'edge mask.png'), edge_mask)
+            edge_mask_list.append(edge_mask)
+
+    video_path = os.path.join(args.geo_buffer_path, 'video')
+    os.makedirs(video_path, exist_ok=True)
 
     if args.if_save_rgb_video:
-        video_path = os.path.join(args.geo_buffer_path,'video')
-        os.makedirs(video_path, exist_ok=True)
         imageio.mimsave(os.path.join(video_path, 'rgb_video.mp4'), np.stack(rgb_frames_list), fps=24, macro_block_size=1)
 
     if args.if_render_normal:
-        video_path = os.path.join(args.geo_buffer_path,'video')
-        os.makedirs(video_path, exist_ok=True)
         for render_idx in range(len(dataset)):
             cur_dir_path = os.path.join(args.geo_buffer_path, f'{dataset.split}_{render_idx:0>3d}')
             normal_map = imageio.v2.imread(os.path.join(cur_dir_path, 'normal.png'))
@@ -262,22 +347,20 @@ def gooch(dataset, args):
         imageio.mimsave(os.path.join(video_path, 'render_normal_video.mp4'), np.stack(optimized_normal_list), fps=24, macro_block_size=1)
 
     if args.if_save_albedo:
-        video_path = os.path.join(args.geo_buffer_path,'video')
-        os.makedirs(video_path, exist_ok=True)
         imageio.mimsave(os.path.join(video_path, 'aligned_albedo_video.mp4'), np.stack(aligned_albedo_list), fps=24, macro_block_size=1)
         imageio.mimsave(os.path.join(video_path, 'roughness_video.mp4'), np.stack(roughness_list), fps=24, macro_block_size=1)
 
     if args.if_save_xys:
-        video_path = os.path.join(args.geo_buffer_path, 'video')
-        os.makedirs(video_path, exist_ok=True)
         imageio.mimsave(os.path.join(video_path, 'xyz.mp4'), np.stack(xyz_list), fps=24, macro_block_size=1)
         imageio.mimsave(os.path.join(video_path, 'x_pos.mp4'), np.stack(x_list), fps=24, macro_block_size=1)
         imageio.mimsave(os.path.join(video_path, 'y_pos.mp4'), np.stack(y_list), fps=24, macro_block_size=1)
         imageio.mimsave(os.path.join(video_path, 'z_pos.mp4'), np.stack(z_list), fps=24, macro_block_size=1)
 
+    if args.if_save_edges and args.edge_detection != 'none':
+        imageio.mimsave(os.path.join(video_path, 'edge_map.mp4'), np.stack(edge_map_list), fps=24, macro_block_size=1)
+        imageio.mimsave(os.path.join(video_path, 'edge_mask.mp4'), np.stack(edge_mask_list), fps=24, macro_block_size=1)
+
     if args.render_video:
-        video_path = os.path.join(args.geo_buffer_path,'video')
-        os.makedirs(video_path, exist_ok=True)
         for i in range(len(shader_list)):
             imageio.mimsave(os.path.join(video_path, f'{shader_list[i].name}.mp4'),
                             np.stack([shader[i] for shader in shader_lists]), fps=24, macro_block_size=1)
@@ -300,12 +383,13 @@ if __name__ == "__main__":
     # The following args are not defined in opt.py
     args.if_save_rgb = True
     args.if_save_depth = True
-    args.if_save_acc = False
+    args.if_save_acc = True
     args.if_save_rgb_video = False
     args.if_save_relight_rgb = True
     args.if_save_albedo = True
     args.if_save_albedo_gamma_corrected = True
-    args.if_save_xys = False
+    args.if_save_xys = True
+    args.if_save_edges = True
     args.debug_light_size = 0.005
     args.acc_mask_threshold = 0.5
     args.if_render_normal = True
@@ -337,6 +421,6 @@ if __name__ == "__main__":
             light_rotation=args.light_rotation
         )
 
-    gooch(test_dataset, args)
+    npr(test_dataset, args)
 
     
