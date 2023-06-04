@@ -1,22 +1,17 @@
-
-import os
 from tqdm import tqdm
 import imageio
-import numpy as np
 
-from models.scan_edges import ScanEdges
+from edge_detection import EdgeDetection
 from opt import config_parser
 import torch
-import torch.nn as nn
-import kornia.filters as K
 
 from shaders import shader_dict
-from utils import visualize_depth_numpy, bilateral_filter
+from utils import visualize_depth_numpy
 # ----------------------------------------
-# use this if loaded checkpoint is generate from single-light or rotated multi-light setting 
+# use this if loaded checkpoint is generated from single-light or rotated multi-light setting
 from models.tensoRF_rotated_lights import raw2alpha, TensorVMSplit, AlphaGridMask
 
-# # use this if loaded checkpoint is generate from general multi-light setting 
+# # use this if loaded checkpoint is generated from general multi-light setting
 # from models.tensoRF_general_multi_lights import TensorVMSplit, AlphaGridMask
 # ----------------------------------------
 from dataLoader.ray_utils import safe_l2_normalize
@@ -24,9 +19,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 from dataLoader import dataset_dict
 from models.relight_utils import *
 brdf_specular = GGX_specular
-from utils import rgb_ssim, rgb_lpips
-from models.relight_utils import Environment_Light
-from renderer import compute_rescale_ratio
+
 
 @torch.no_grad()
 def npr(dataset, args):
@@ -41,8 +34,7 @@ def npr(dataset, args):
     tensoIR = eval(args.model_name)(**kwargs)
     tensoIR.load(ckpt)
 
-    scan_edges = ScanEdges(**kwargs)
-    scan_edges.load(ckpt)
+    edge_detection = EdgeDetection(args.edge_detection, ckpt, **kwargs)
 
     W, H = dataset.img_wh
     near_far = dataset.near_far
@@ -159,57 +151,18 @@ def npr(dataset, args):
         shader_maps = torch.cat(shader_maps, dim=1)
 
         # Edge detection
-        if args.edge_detection != 'none':
+        if edge_detection.active:
 
-            depth_min = depth_map.min()
-            depth_max = 2.0 * depth_map.max()
-            normalized_depth_map = torch.full_like(depth_map, depth_max)
-            normalized_depth_map[acc_map_mask] = depth_map[acc_map_mask]
-            normalized_depth_map = (normalized_depth_map - depth_min) / (depth_max - depth_min)
-            normalized_depth_map = normalized_depth_map.reshape(1, 1, H, W)
-
-            modified_depth_map = 1.0 - normalized_depth_map
-            modified_depth_map = modified_depth_map ** args.edge_detection_depth_modifier
-            modified_normal_map = normal_map.permute(1, 0).reshape(1, 3, H, W)
-            modified_normal_map = modified_normal_map * modified_depth_map.expand(-1, 3, -1, -1)
-
-            if args.edge_detection == 'scan':
-                depth_edge_mask = scan_edges(frame_rays, (W, H)).reshape(H*W).cpu()  # [H*W]
-                depth_edge_map = torch.where(depth_edge_mask, torch.zeros((H*W,)), torch.ones((H*W,)))  # [H*W]
-                normal_edge_mask = torch.full((H * W,), False)  # [H*W]
-                normal_edge_map = torch.zeros((H * W,))  # [H*W]
-
-            elif args.edge_detection == 'normals':
-                depth_edge_map = torch.where(
-                    acc_map_mask, torch.abs(torch.sum(view_map * normal_map, dim=-1)), torch.ones((H*W,)))  # [H*W]
-                depth_edge_mask = (depth_edge_map < args.edge_detection_args[0])  # [H*W]
-                normal_edge_map = torch.zeros((H*W,))  # [H*W]
-                normal_edge_mask = torch.full((H*W,), False)  # [H*W]
-
-            elif args.edge_detection == 'canny':
-                depth_edge_map, depth_edge_mask = K.canny(
-                    modified_depth_map,
-                    low_threshold=args.edge_detection_args[0],
-                    high_threshold=args.edge_detection_args[1]
-                )  # [1, 1, H, W]
-                depth_edge_map = depth_edge_map.view(-1)  # [H*W]
-                depth_edge_mask = depth_edge_mask.bool().view(-1)  # [H*W]
-
-                normal_edge_map, normal_edge_mask = K.canny(
-                    modified_normal_map,
-                    low_threshold=args.edge_detection_args[2],
-                    high_threshold=args.edge_detection_args[3]
-                )  # [1, 1, H, W]
-                normal_edge_map = normal_edge_map.view(-1)  # [H*W]
-                normal_edge_mask = normal_edge_mask.bool().view(-1)  # [H*W]
-
-            elif args.edge_detection == 'sobel':
-                depth_edge_map = K.sobel(modified_depth_map).view(-1)  # [H*W]
-                depth_edge_mask = depth_edge_map > args.edge_detection_args[0]  # [H*W]
-
-                normal_edge_map = K.sobel(modified_normal_map).view(3, -1)  # [3, H*W]
-                normal_edge_map = torch.sum(normal_edge_map, dim=0)  # [H*W]
-                normal_edge_mask = normal_edge_map > args.edge_detection_args[1]  # [H*W]
+            depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask = edge_detection.detect(
+                *(args.edge_detection_args if args.edge_detection_args is not None else []),
+                rays=frame_rays,
+                hw=(H, W),
+                mask=acc_map_mask,
+                depth_map=depth_map,
+                normal_map=normal_map,
+                view_map=view_map,
+                scale=args.edge_detection_depth_modifier
+            )
 
             # Draw edges
             for i in range(len(shader_list)):
@@ -314,7 +267,7 @@ def npr(dataset, args):
             x_list.append(x_map)
             y_list.append(y_map)
             z_list.append(z_map)
-        if args.if_save_edges and args.edge_detection != 'none':
+        if args.if_save_edges and edge_detection.active:
             edge_map = torch.full((H*W,), 0.5)
             edge_map += normal_edge_map / 2.0
             edge_map -= depth_edge_map / 2.0
@@ -356,7 +309,7 @@ def npr(dataset, args):
         imageio.mimsave(os.path.join(video_path, 'y_pos.mp4'), np.stack(y_list), fps=24, macro_block_size=1)
         imageio.mimsave(os.path.join(video_path, 'z_pos.mp4'), np.stack(z_list), fps=24, macro_block_size=1)
 
-    if args.if_save_edges and args.edge_detection != 'none':
+    if args.if_save_edges and edge_detection.active:
         imageio.mimsave(os.path.join(video_path, 'edge_map.mp4'), np.stack(edge_map_list), fps=24, macro_block_size=1)
         imageio.mimsave(os.path.join(video_path, 'edge_mask.mp4'), np.stack(edge_mask_list), fps=24, macro_block_size=1)
 

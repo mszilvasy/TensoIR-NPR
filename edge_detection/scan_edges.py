@@ -13,22 +13,26 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class ScanEdges(TensorVMSplit):
-    def __init__(self, aabb, gridSize, device, **kwargs):
+    def __init__(self, aabb, gridSize, device, acc_threshold=1.0, alpha_threshold=0.35, **kwargs):
         super().__init__(aabb, gridSize, device, **kwargs)
+        self.acc_threshold = acc_threshold
+        self.alpha_threshold = alpha_threshold
 
-    def __call__(self, rays, hw, image_dir=None):
+    def __call__(self, rays, hw, image_dir=None, save_intermediates=False):
         """
         :param rays: [H*W, 6]
         :return: [H, W, 1]
         """
-        save_images = image_dir is not None
-        if save_images:
-            scan_path = os.path.join(image_dir, 'scan')
-            edge_path = os.path.join(image_dir, 'edge')
+        save_results = image_dir is not None
+        if save_results:
             video_path = os.path.join(image_dir, 'video')
             os.makedirs(image_dir, exist_ok=True)
-            os.makedirs(scan_path, exist_ok=True)
-            os.makedirs(edge_path, exist_ok=True)
+            os.makedirs(video_path, exist_ok=True)
+            if save_intermediates:
+                scan_path = os.path.join(image_dir, 'scan')
+                edge_path = os.path.join(image_dir, 'edge')
+                os.makedirs(scan_path, exist_ok=True)
+                os.makedirs(edge_path, exist_ok=True)
         else:
             scan_path, edge_path, video_path = None, None, None
         scans, outlines = [], []
@@ -56,7 +60,7 @@ class ScanEdges(TensorVMSplit):
             surface = torch.full((H, W), False).to(rays.device)
             immature = torch.full((H, W), False).to(rays.device)  # immature outlines could become mature later
             mature = torch.full((H, W), False).to(rays.device)  # finalised silhouette edges
-            for i in tqdm(range(len(steps))):
+            for i in tqdm(range(len(steps)), desc='Scanning outlines', leave=save_results):
                 pts = rays_o + steps[i] * rays_d
 
                 mask = ((self.aabb[0] <= pts) & (pts <= self.aabb[1])).all(dim=-1)
@@ -74,14 +78,13 @@ class ScanEdges(TensorVMSplit):
                     valid_sigma = self.feature2density(sigma_feature)
                     sigma[mask] = valid_sigma
 
-                _, weight, _ = raw2alpha(sigma, step * self.distance_scale)
-                weight = weight.reshape(H, W)
-                weight_mask = weight > self.rayMarch_weight_thres  # [H, W]
-                acc[weight_mask] += weight[weight_mask]
-
-                layer_mask = torch.logical_and(weight_mask, acc >= 1.0)  # [H, W]
+                alpha, _, _ = raw2alpha(sigma, step * self.distance_scale)
+                alpha = alpha.reshape(H, W)
+                acc += alpha
+                acc_mask = acc >= self.acc_threshold
+                layer_mask = torch.logical_and(acc_mask, alpha > self.alpha_threshold) #* acc)
                 layer &= layer_mask
-                layer |= torch.logical_and(layer_mask, ~surface)
+                layer |= torch.logical_and(acc_mask, ~surface)
                 surface |= layer
 
                 immature[layer] = False
@@ -96,7 +99,7 @@ class ScanEdges(TensorVMSplit):
                 immature = outer
                 immature[torch.logical_or(surface, mature)] = False
 
-                if save_images:
+                if save_results:
                     scan = torch.where(
                         layer, torch.ones_like(acc), torch.where(
                             surface, torch.full_like(acc, 0.5), torch.zeros_like(acc)))
@@ -107,14 +110,15 @@ class ScanEdges(TensorVMSplit):
 
                     scan = (scan.cpu().numpy() * 255).astype('uint8')
                     outline = (outline.cpu().numpy() * 255).astype('uint8')
-                    imageio.imwrite(os.path.join(scan_path, f'{i}.png'), scan)
-                    imageio.imwrite(os.path.join(edge_path, f'{i}.png'), outline)
+                    if save_intermediates:
+                        imageio.imwrite(os.path.join(scan_path, f'{i}.png'), scan)
+                        imageio.imwrite(os.path.join(edge_path, f'{i}.png'), outline)
                     scans.append(scan)
                     outlines.append(outline)
 
             mature |= immature
 
-        if save_images:
+        if save_results:
             os.makedirs(video_path, exist_ok=True)
             imageio.mimsave(os.path.join(video_path, 'scan.mp4'), np.stack(scans), fps=24, macro_block_size=1)
             imageio.mimsave(os.path.join(video_path, 'edge.mp4'), np.stack(outlines), fps=24, macro_block_size=1)
@@ -170,7 +174,7 @@ if __name__ == "__main__":
     model = ScanEdges(**kwargs)
     model.load(ckpt)
 
-    res = model(rays, dataset.img_wh, image_dir=args.geo_buffer_path)
+    res = model(rays, dataset.img_wh, image_dir=args.geo_buffer_path, save_intermediates=False)
     img = torch.where(res, torch.zeros_like(res), torch.ones_like(res))
     img = img.unsqueeze(-1).expand(-1, -1, 3)
     img = (img.cpu().numpy() * 255).astype('uint8')
