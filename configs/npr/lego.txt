@@ -57,19 +57,19 @@ light_name = sunset
 albedo_smoothness_loss_weight = 0.0001
 roughness_smoothness_loss_weight = 0.0002
 
-shaders = [gooch]
+shaders = [gooch, toon]
 
 light = point
-light_pos = [-0.5, 1.2, 0.5]
+light_pos = [-0.5, 1.2, 1.0]
 light_rgb = [1.0, 1.0, 1.0]
 light_debug = [1.0, 1.0, 0.0]
 
 ambience = 0.1
 shininess = 20.0
 
-edge_detection = sobel
+edge_detection = scan
 edge_detection_args = [0.01, 0.1]
-edge_detection_depth_modifier = 2.0
+edge_detection_depth_modifier = 3.0
 normal_edges = 0.1
 
 blinn_phong_diffuse = 1.0

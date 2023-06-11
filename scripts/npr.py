@@ -160,6 +160,7 @@ def npr(dataset, args):
                 mask=acc_map_mask,
                 depth_map=depth_map,
                 normal_map=normal_map,
+                xyz_map=xyz_map,
                 view_map=view_map,
                 scale=args.edge_detection_depth_modifier
             )

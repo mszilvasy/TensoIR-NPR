@@ -1,4 +1,6 @@
 import os
+
+import cv2
 import imageio
 import numpy as np
 import torch
@@ -8,19 +10,25 @@ from tqdm import tqdm
 from dataLoader import dataset_dict
 from models.tensoRF_rotated_lights import TensorVMSplit, raw2alpha
 from opt import config_parser
+from utils import visualize_depth_numpy
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class ScanEdges(TensorVMSplit):
-    def __init__(self, aabb, gridSize, device, acc_threshold=1.0, alpha_threshold=0.35, **kwargs):
+    def __init__(self, aabb, gridSize, device,
+                 acc_threshold=0.5, alpha_threshold=0.35, strength_threshold=0.1,
+                 **kwargs):
         super().__init__(aabb, gridSize, device, **kwargs)
         self.acc_threshold = acc_threshold
         self.alpha_threshold = alpha_threshold
+        self.strength_threshold = strength_threshold
 
-    def __call__(self, rays, hw, image_dir=None, save_intermediates=False):
+    def __call__(self, rays, hw,
+                 track_lines=-1, depth_weight=1.0, image_dir=None, save_intermediates=False, visualize_depth=None):
         """
         :param rays: [H*W, 6]
+        :param hw: (H, W)
         :return: [H, W, 1]
         """
         save_results = image_dir is not None
@@ -38,8 +46,10 @@ class ScanEdges(TensorVMSplit):
         scans, outlines = [], []
 
         H, W = hw
-        red = torch.zeros(H, W, 3).to(rays.device)
-        red[:, :, 0] = 1.0
+        red_torch = torch.zeros(H, W, 3).to(rays.device)
+        red_torch[:, :, 0] = 1.0
+        red_numpy = np.zeros((H, W, 3), dtype=np.uint8)
+        red_numpy[:, :, 0] = 255
         green = torch.zeros(H, W, 3).to(rays.device)
         green[:, :, 1] = 1.0
 
@@ -53,15 +63,18 @@ class ScanEdges(TensorVMSplit):
         rate_b = (self.aabb[0] - rays_o) / vec
         t_min = max(torch.minimum(rate_a, rate_b).amax(-1).min(), near)
         steps = t_min + torch.arange(self.nSamples).to(rays.device) * step
+        minmax = (t_min.item(), (t_min + step * self.nSamples).item())
 
         with torch.no_grad():
             acc = torch.zeros(H, W).to(rays.device)
+            edge_depth = torch.zeros(H, W).to(rays.device)  # the depth at which edges are detected
             layer = torch.full((H, W), False).to(rays.device)
             surface = torch.full((H, W), False).to(rays.device)
             immature = torch.full((H, W), False).to(rays.device)  # immature outlines could become mature later
             mature = torch.full((H, W), False).to(rays.device)  # finalised silhouette edges
             for i in tqdm(range(len(steps)), desc='Scanning outlines', leave=save_results):
-                pts = rays_o + steps[i] * rays_d
+                depth = steps[i]
+                pts = rays_o + depth * rays_d
 
                 mask = ((self.aabb[0] <= pts) & (pts <= self.aabb[1])).all(dim=-1)
                 if self.alphaMask is not None:
@@ -80,9 +93,9 @@ class ScanEdges(TensorVMSplit):
 
                 alpha, _, _ = raw2alpha(sigma, step * self.distance_scale)
                 alpha = alpha.reshape(H, W)
-                acc += alpha
+                acc += alpha * (1.0 - acc)
                 acc_mask = acc >= self.acc_threshold
-                layer_mask = torch.logical_and(acc_mask, alpha > self.alpha_threshold) #* acc)
+                layer_mask = torch.logical_and(acc_mask, alpha > self.alpha_threshold)
                 layer &= layer_mask
                 layer |= torch.logical_and(acc_mask, ~surface)
                 surface |= layer
@@ -96,6 +109,7 @@ class ScanEdges(TensorVMSplit):
 
                 # surviving immature outlines which are no longer on the edge of the current layer are finalised
                 mature |= torch.logical_and(immature, ~outer)
+                edge_depth[torch.logical_and(outer, ~torch.logical_or(mature, immature))] = depth
                 immature = outer
                 immature[torch.logical_or(surface, mature)] = False
 
@@ -104,12 +118,20 @@ class ScanEdges(TensorVMSplit):
                         layer, torch.ones_like(acc), torch.where(
                             surface, torch.full_like(acc, 0.5), torch.zeros_like(acc)))
                     scan = scan.unsqueeze(-1).expand(-1, -1, 3)  # [H, W, 3]
-                    outline = torch.where(
-                        immature.unsqueeze(-1), red, torch.where(
-                            mature.unsqueeze(-1), green, scan))  # [H, W, 3]
+                    if visualize_depth is not None:
+                        edge_depth_numpy = edge_depth.unsqueeze(-1).cpu().numpy()
+                        colored = visualize_depth_numpy(edge_depth_numpy, minmax, visualize_depth)[0]
+                        outline = np.where(
+                            immature.unsqueeze(-1).cpu().numpy(), red_numpy, np.where(
+                                mature.unsqueeze(-1).cpu().numpy(), colored, (scan * 255).cpu().numpy()))  # [H, W, 3]
+                        outline = outline.astype('uint8')
+                    else:
+                        outline = torch.where(
+                            immature.unsqueeze(-1), red_torch, torch.where(
+                                mature.unsqueeze(-1), green, scan))  # [H, W, 3]
+                        outline = (outline.cpu().numpy() * 255).astype('uint8')
 
                     scan = (scan.cpu().numpy() * 255).astype('uint8')
-                    outline = (outline.cpu().numpy() * 255).astype('uint8')
                     if save_intermediates:
                         imageio.imwrite(os.path.join(scan_path, f'{i}.png'), scan)
                         imageio.imwrite(os.path.join(edge_path, f'{i}.png'), outline)
@@ -118,12 +140,47 @@ class ScanEdges(TensorVMSplit):
 
             mature |= immature
 
+            # weight(n) = (k - 1)(n - y)/(x - y) + 1 = m(n - y) + 1
+            if depth_weight != 1.0:
+                mult = (depth_weight - 1.0) / (minmax[0] - minmax[1])
+                edge_map = torch.where(
+                    mature, mult * (edge_depth - minmax[1]) + 1.0, torch.zeros_like(edge_depth))  # [H, W]
+                max_weight = edge_map.max().item()
+                pad = int(np.ceil(max_weight) - 1)
+                edge_map = F.pad(edge_map, (pad, pad, pad, pad), value=0.0)  # [H+2*pad, W+2*pad]
+                edge_mask = edge_map > 0.0  # [H+2*pad, W+2*pad]
+
+                for i in range(0, pad):
+                    excess = torch.clamp(edge_map - 1.0, min=0.0)
+                    edge_map -= excess
+                    excess /= 4.0
+                    for shift in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        edge_map[~edge_mask] += torch.roll(excess, shift, dims=(0, 1))[~edge_mask]
+                    edge_mask = edge_map > 0.0
+
+                    if save_results and visualize_depth is not None:
+                        scan = torch.where(surface, torch.full_like(acc, 0.5), torch.zeros_like(acc))  # [H, W]
+                        scan = (scan.unsqueeze(-1).expand(-1, -1, 3) * 255).cpu().numpy()  # [H, W, 3]
+                        edge_map_numpy = edge_map[pad:-pad, pad:-pad].unsqueeze(-1).cpu().numpy()
+                        colored = visualize_depth_numpy(edge_map_numpy, (1.0, depth_weight), visualize_depth)[0]
+                        outline = np.where(
+                            edge_mask[pad:-pad, pad:-pad].unsqueeze(-1).cpu().numpy(), colored, scan)  # [H, W, 3]
+                        outline = outline.astype('uint8')
+                        if save_intermediates:
+                            imageio.imwrite(os.path.join(edge_path, f'{len(outlines)}_expand.png'), outline)
+                        outlines.append(outline)
+
+                edge_map = edge_map[pad:-pad, pad:-pad]  # [H, W]
+                mature = edge_map >= self.strength_threshold  # [H, W]
+            else:
+                edge_map = torch.where(mature, torch.ones_like(edge_depth), torch.zeros_like(edge_depth))  # [H, W]
+
         if save_results:
             os.makedirs(video_path, exist_ok=True)
             imageio.mimsave(os.path.join(video_path, 'scan.mp4'), np.stack(scans), fps=24, macro_block_size=1)
             imageio.mimsave(os.path.join(video_path, 'edge.mp4'), np.stack(outlines), fps=24, macro_block_size=1)
 
-        return mature
+        return mature, edge_map
 
 
 if __name__ == "__main__":
@@ -174,8 +231,17 @@ if __name__ == "__main__":
     model = ScanEdges(**kwargs)
     model.load(ckpt)
 
-    res = model(rays, dataset.img_wh, image_dir=args.geo_buffer_path, save_intermediates=False)
-    img = torch.where(res, torch.zeros_like(res), torch.ones_like(res))
-    img = img.unsqueeze(-1).expand(-1, -1, 3)
-    img = (img.cpu().numpy() * 255).astype('uint8')
-    imageio.imwrite(os.path.join(args.geo_buffer_path, f'{args.frame_index}_final.png'), img)
+    res_mask, res_map = model(
+        rays, dataset.img_wh,
+        track_lines=2,
+        depth_weight=1.0,
+        image_dir=args.geo_buffer_path,
+        save_intermediates=False,
+        visualize_depth=None)#cv2.COLORMAP_SUMMER)
+    mask_img = torch.where(res_mask, torch.zeros_like(res_mask), torch.ones_like(res_mask))
+    mask_img = mask_img.unsqueeze(-1).expand(-1, -1, 3)
+    mask_img = (mask_img.cpu().numpy() * 255).astype('uint8')
+    imageio.imwrite(os.path.join(args.geo_buffer_path, f'{args.frame_index}_mask.png'), mask_img)
+    map_img = torch.where(res_mask, 1.0 - res_map, torch.ones_like(res_map))
+    map_img = (map_img.cpu().numpy() * 255).astype('uint8')
+    imageio.imwrite(os.path.join(args.geo_buffer_path, f'{args.frame_index}_map.png'), map_img)

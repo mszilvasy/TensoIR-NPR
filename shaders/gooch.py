@@ -41,5 +41,5 @@ class Gooch(Shader):
 
     def draw_edges(self, rgb, depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask):
         rgb[normal_edge_mask] += self.normal_edges
-        rgb[depth_edge_mask] = torch.zeros_like(rgb[depth_edge_mask])
+        rgb[depth_edge_mask] = ((1.0 - depth_edge_map.unsqueeze(-1).expand(-1, 3)) * rgb)[depth_edge_mask]
         return torch.clamp(rgb, min=0.0, max=1.0)

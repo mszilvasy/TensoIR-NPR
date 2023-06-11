@@ -222,7 +222,7 @@ def config_parser(cmd=None):
     parser.add_argument("--shininess", type=float)
 
     parser.add_argument("--edge_detection", type=str, default="none",
-                        choices=["none", "scan", "normals", "canny", "sobel"])
+                        choices=["none", "scan", "normals", "canny", "sobel", "geometric"])
     parser.add_argument("--edge_detection_args", type=float, action="append")
     parser.add_argument("--edge_detection_depth_modifier", type=float, default=1.0)
     parser.add_argument("--normal_edges", type=float, default=0.0)
