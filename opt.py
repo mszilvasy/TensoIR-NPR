@@ -210,9 +210,12 @@ def config_parser(cmd=None):
 
     # # # NPR ARGS FOLLOW
 
+    parser.add_argument("--frame_index", type=int, default=-1,
+                        help="the index of the frame to render, or -1 to render all frames (default)")
     parser.add_argument("--pose", type=str, default="test", choices=["test", "render"])
 
-    parser.add_argument("--shaders", type=str, action="append")
+    parser.add_argument("--shaders", type=str, action="append",
+                        choices=["specular_only", "blinn_phong", "gooch", "toon"])
 
     parser.add_argument("--light", type=str, default="infinity", choices=["point", "infinity"])
     parser.add_argument("--light_pos", type=float, action="append")
@@ -221,10 +224,9 @@ def config_parser(cmd=None):
     parser.add_argument("--ambience", type=float)
     parser.add_argument("--shininess", type=float)
 
-    parser.add_argument("--edge_detection", type=str, default="none",
+    parser.add_argument("--edge_detection", type=str, action="append",
                         choices=["none", "scan", "normals", "canny", "sobel", "geometric"])
-    parser.add_argument("--edge_detection_args", type=float, action="append")
-    parser.add_argument("--edge_detection_depth_modifier", type=float, default=1.0)
+    parser.add_argument("--edge_detection_args", type=str, action="append")
     parser.add_argument("--normal_edges", type=float, default=0.0)
 
     parser.add_argument("--light_debug", type=float, action="append", default=[])

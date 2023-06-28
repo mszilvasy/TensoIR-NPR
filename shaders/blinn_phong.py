@@ -15,7 +15,7 @@ class BlinnPhong(Shader):
 
     def __call__(self, mask, pos, depth, view, normal, albedo, roughness):
 
-        blinn_phong = torch.zeros_like(pos)
+        blinn_phong = torch.ones_like(pos)
         l = super().light_dir(pos)
         ln = torch.clamp(torch.sum(l * normal, dim=-1, keepdim=True), min=0.0)  # [bs, 1]
         ambient, diffuse = self.ambience * albedo, (1.0 - self.ambience) * albedo

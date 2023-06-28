@@ -1,4 +1,3 @@
-import torch
 from models.relight_utils import *
 from shaders.shader import Shader
 
@@ -15,6 +14,7 @@ class Gooch(Shader):
         self.alpha = args.gooch_alpha
         self.beta = args.gooch_beta
         self.specular_intensity = args.gooch_specular
+        self.has_edges = True
 
     def __call__(self, mask, pos, depth, view, normal, albedo, roughness):
 
@@ -39,7 +39,7 @@ class Gooch(Shader):
 
         return gooch  # [bs, 3]
 
-    def draw_edges(self, rgb, depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask):
-        rgb[normal_edge_mask] += self.normal_edges
-        rgb[depth_edge_mask] = ((1.0 - depth_edge_map.unsqueeze(-1).expand(-1, 3)) * rgb)[depth_edge_mask]
+    def draw_edges(self, rgb, depth_edges, normal_edges):
+        rgb += self.normal_edges * normal_edges.unsqueeze(-1).expand(-1, 3)
+        rgb *= 1.0 - depth_edges.unsqueeze(-1).expand(-1, 3)
         return torch.clamp(rgb, min=0.0, max=1.0)

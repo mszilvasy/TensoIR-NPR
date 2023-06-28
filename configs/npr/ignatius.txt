@@ -56,16 +56,23 @@ rm_weight_mask_thre = 1e-4
 TV_weight_density = 0.05
 TV_weight_app = 0.005
 
-shaders = [specular_only, blinn_phong, gooch]
+pose = render
+frame_index = -1 # Used in the paper: 7 188
+
+shaders = [gooch] # [specular_only, blinn_phong, gooch, toon]
 
 light = point
 light_pos = [-0.5, -0.5, 0.1]
 light_rgb = [1.0, 1.0, 1.0]
-light_debug = [1.0, 1.0, 1.0]
+light_debug = [1.0, 1.0, 0.0]
 
+ambience = 0.1
 shininess = 20.0
 
-blinn_phong_ambience = 0.1
+edge_detection = [scan] # [canny, sobel, scan, none]
+edge_detection_args = [[0.8, 0.25, 1.8, 1.8, 1]] # [[0.03, 0.06, 0.6, 0.99], [0.01, 0.5], [], []]
+normal_edges = 0.1
+
 blinn_phong_diffuse = 1.0
 blinn_phong_specular = 0.8
 
@@ -73,4 +80,6 @@ gooch_b = 0.06
 gooch_y = 0.03
 gooch_alpha = 0.1
 gooch_beta = 0.6
-gooch_specular = 1.0
+gooch_specular = 0.75
+
+toon_cutoff = 0.4

@@ -59,16 +59,22 @@ light_name = sunset
 albedo_smoothness_loss_weight = 0.0001
 roughness_smoothness_loss_weight = 0.0002
 
-shaders = [blinn_phong, gooch]
+frame_index = -1 # Used in the paper: 92
+
+shaders = [toon] # [specular_only, blinn_phong, gooch, toon]
 
 light = point
 light_pos = [1.0, 2.0, 0.0]
 light_rgb = [1.0, 1.0, 1.0]
-light_debug = [1.0, 1.0, 1.0]
+light_debug = [1.0, 1.0, 0.0]
 
+ambience = 0.1
 shininess = 30.0
 
-blinn_phong_ambience = 0.1
+edge_detection = [sobel] # [canny, sobel, scan, none]
+edge_detection_args = [[0.02, 0.4]] # [[0.03, 0.06, 0.6, 0.99], [0.01, 0.4], [], []]
+normal_edges = 0.1
+
 blinn_phong_diffuse = 1.0
 blinn_phong_specular = 0.6
 
@@ -77,4 +83,6 @@ gooch_y = 0.05
 gooch_alpha = 0.3
 gooch_beta = 0.65
 gooch_specular = 0.6
+
+toon_cutoff = 0.4
  

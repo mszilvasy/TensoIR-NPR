@@ -11,6 +11,7 @@ class Toon(Shader):
         self.name = 'toon'
         self.ambience = args.ambience
         self.cutoff = args.toon_cutoff
+        self.has_edges = True
 
     def __call__(self, mask, pos, depth, view, normal, albedo, roughness):
 
@@ -28,7 +29,7 @@ class Toon(Shader):
 
         return toon  # [bs, 3]
 
-    def draw_edges(self, rgb, depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask):
-        rgb[depth_edge_mask] = torch.zeros_like(rgb[depth_edge_mask])
-        rgb[normal_edge_mask] = torch.zeros_like(rgb[normal_edge_mask])
+    def draw_edges(self, rgb, depth_edges, normal_edges):
+        rgb = torch.clamp(
+            rgb - normal_edges.unsqueeze(-1).expand(-1, 3) - depth_edges.unsqueeze(-1).expand(-1, 3), min=0.0)
         return rgb

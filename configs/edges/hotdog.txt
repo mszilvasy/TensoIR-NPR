@@ -1,12 +1,12 @@
 dataset_name = tensoIR_unknown_rotated_lights
-datadir = ./data/TensoIR_Synthetic/lego
-hdrdir = ./data/Environment_Maps/high_res_envmaps_1k
-expname =  lego_relighting
+datadir = ./data/TensoIR_Synthetic/hotdog
+hdrdir = ./data/Environment_Maps/high_res_envmaps_2k
+expname = hotdog_relighting
 basedir = ./log/log_relighting_test
 add_timestamp = 1
 downsample_train = 1
 downsample_test = 1
-geo_buffer_path = ./npr/lego
+geo_buffer_path = ./edges/hotdog
 
 n_iters = 80000
 batch_size = 4096
@@ -15,17 +15,14 @@ lr_decay_iters = 80000
 N_voxel_init = 2097152 # 128**3
 N_voxel_final = 27000000 # 300**3
 
-
 upsamp_list = [10000, 20000, 30000, 40000]
 update_AlphaMask_list = [10000, 15000, 20000, 25000, 30000, 35000]
-
 
 render_test = 1
 
 n_lamb_sigma = [16,16,16]
 n_lamb_sh = [48,48,48]
 model_name = TensorVMSplit
-
 
 shadingMode = MLP_Fea
 fea2denseAct = softplus
@@ -34,13 +31,9 @@ view_pe = 2
 fea_pe = 2
 pos_pe = 2
 
-
-
 L1_weight_inital = 8e-5
 L1_weight_rest = 4e-5
 rm_weight_mask_thre = 1e-4
-
-
 
 light_rotation = [000, 120, 240]
 light_sample_train = stratified_sampling
@@ -57,29 +50,6 @@ light_name = sunset
 albedo_smoothness_loss_weight = 0.0001
 roughness_smoothness_loss_weight = 0.0002
 
-frame_index = -1 # Used in the paper: 13 36
+frame_index = 140
 
-shaders = [gooch] # [specular_only, blinn_phong, gooch, toon]
-
-light = point
-light_pos = [-0.8, 1.2, 1.0]
-light_rgb = [1.0, 1.0, 1.0]
-light_debug = [1.0, 1.0, 0.0]
-
-ambience = 0.1
-shininess = 20.0
-
-edge_detection = [sobel] # [canny, sobel, scan, none]
-edge_detection_args = [[0.01, 0.5]] # [[0.03, 0.06, 0.6, 0.99], [0.01, 0.5], [0.8, 0.5, 1.5, 1.0], []]
-normal_edges = 0.1
-
-blinn_phong_diffuse = 1.0
-blinn_phong_specular = 0.8
-
-gooch_b = 0.5
-gooch_y = 0.25
-gooch_alpha = 0.25
-gooch_beta = 0.55
-gooch_specular = 1.0
-
-toon_cutoff = 0.4
+edge_detection_args = [[0.6, 0.1, 2, 1]] # [[0.6, 0.05, 1.2, 1.2], [0.6, 0.1, 1.2, 1.2], [0.6, 0.15, 1.2, 1.2], [0.6, 0.2, 1.2, 1.2], [0.6, 0.25, 1.2, 1.2], [-1, 2, 1.2, 1.2], [-1, 4, 1.2, 1.2], [-1, 6, 1.2, 1.2], [-1, 8, 1.2, 1.2], [-1, 10, 1.2, 1.2]]

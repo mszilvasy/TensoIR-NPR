@@ -49,3 +49,7 @@ batch_size_test = 4096
 light_name = sunset
 albedo_smoothness_loss_weight = 0.0001
 roughness_smoothness_loss_weight = 0.0002
+
+frame_index = 13
+
+edge_detection_args = [[0.8, 0.4, 2.5, 2.5, 1], [0.8, 0.4, 2.5, 2.5]]

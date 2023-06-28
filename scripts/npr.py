@@ -34,7 +34,8 @@ def npr(dataset, args):
     tensoIR = eval(args.model_name)(**kwargs)
     tensoIR.load(ckpt)
 
-    edge_detection = EdgeDetection(args.edge_detection, ckpt, **kwargs)
+    edge_detection = [EdgeDetection(method, ckpt, **kwargs) for method in args.edge_detection]
+    edge_detection_args = [eval(edge_args) for edge_args in args.edge_detection_args]
 
     W, H = dataset.img_wh
     near_far = dataset.near_far
@@ -48,10 +49,11 @@ def npr(dataset, args):
     xyz_list = []
     x_list, y_list, z_list = [], [], []
 
-    edge_map_list, edge_mask_list = [], []
+    edges_raw_list, edges_list = [], []
 
     shader_list = [shader_dict[shader](args, device) for shader in args.shaders]
-    shader_lists, shader_debug_lists = [], []
+    shader_debug_lists = []
+    results = []
 
     #### 
     light_rotation_idx = 0
@@ -61,7 +63,7 @@ def npr(dataset, args):
     light_debug = args.light == 'point' and len(args.light_debug) == 3
     light_debug_color = torch.Tensor(args.light_debug).cpu() if light_debug else None
 
-    for idx in tqdm(range(len(dataset))):
+    for idx in tqdm(range(len(dataset))) if args.frame_index == -1 else range(args.frame_index, args.frame_index + 1):
 
         cur_dir_path = os.path.join(args.geo_buffer_path, f'{dataset.split}_{idx:0>3d}')
         os.makedirs(cur_dir_path, exist_ok=True)
@@ -74,12 +76,12 @@ def npr(dataset, args):
 
         rgb_map, depth_map, normal_map, albedo_map, roughness_map, fresnel_map, normals_diff_map, acc_map, \
             normals_orientation_loss_map, xyz_map, view_map = [], [], [], [], [], [], [], [], [], [], []
-        depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask = [], [], [], []
+        depth_edges_raw, depth_edges, normal_edges_raw, normal_edges = [], [], [], []
         shader_maps, shader_debug_maps = [], []
         light_debug_mask = []
 
         chunk_idxs = torch.split(torch.arange(frame_rays.shape[0]), args.batch_size)  # choose the first light idx
-        for chunk_idx in chunk_idxs:
+        for chunk_idx in chunk_idxs if args.frame_index == -1 else tqdm(chunk_idxs):
             with torch.enable_grad():
                 rgb_chunk, depth_chunk, normal_chunk, albedo_chunk, roughness_chunk, \
                     fresnel_chunk, acc_chunk, *temp \
@@ -89,14 +91,6 @@ def npr(dataset, args):
             acc_chunk_mask = (acc_chunk > args.acc_mask_threshold)
             rays_o_chunk, rays_d_chunk = frame_rays[chunk_idx][:, :3], frame_rays[chunk_idx][:, 3:]
             surface_xyz_chunk = rays_o_chunk + depth_chunk.unsqueeze(-1) * rays_d_chunk  # [bs, 3]
-            masked_surface_pts = surface_xyz_chunk[acc_chunk_mask]  # [surface_point_num, 3]
-
-            masked_normal_chunk = normal_chunk[acc_chunk_mask]  # [surface_point_num, 3]
-            masked_albedo_chunk = albedo_chunk[acc_chunk_mask]  # [surface_point_num, 3]
-            masked_roughness_chunk = roughness_chunk[acc_chunk_mask]  # [surface_point_num, 1]
-            masked_fresnel_chunk = fresnel_chunk[acc_chunk_mask]  # [surface_point_num, 1]
-            masked_light_idx_chunk = light_idx[chunk_idx][acc_chunk_mask]  # [surface_point_num, 1]
-            masked_xyz_chunk = surface_xyz_chunk[acc_chunk_mask]
 
             normal_chunk = safe_l2_normalize(normal_chunk, dim=-1)
             view_chunk = -rays_d_chunk  # [bs, 3]
@@ -151,25 +145,60 @@ def npr(dataset, args):
         shader_maps = torch.cat(shader_maps, dim=1)
 
         # Edge detection
-        if edge_detection.active:
+        result, edge_raw_list, edge_list = [], [], []
+        for i, method in enumerate(edge_detection):
+            if method.active:
 
-            depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask = edge_detection.detect(
-                *(args.edge_detection_args if args.edge_detection_args is not None else []),
-                rays=frame_rays,
-                hw=(H, W),
-                mask=acc_map_mask,
-                depth_map=depth_map,
-                normal_map=normal_map,
-                xyz_map=xyz_map,
-                view_map=view_map,
-                scale=args.edge_detection_depth_modifier
-            )
-
-            # Draw edges
-            for i in range(len(shader_list)):
-                shader_maps[i] = shader_list[i].draw_edges(
-                    shader_maps[i], depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask
+                depth_edges_raw, depth_edges, normal_edges_raw, normal_edges = method.detect(
+                    *edge_detection_args[i],
+                    rays=frame_rays,
+                    hw=(H, W),
+                    mask=acc_map_mask,
+                    depth_map=depth_map,
+                    normal_map=normal_map,
+                    xyz_map=xyz_map,
+                    view_map=view_map
                 )
+
+                # Draw edges
+                result.append([shader_list[j].draw_edges(shader_maps[j].detach().clone(), depth_edges, normal_edges)
+                               for j in range(len(shader_list))])
+
+                # Save edges
+                if args.save_edges == 'all':
+                    edges_raw = torch.full((H * W,), 0.5)
+                    edges_raw += torch.clamp(normal_edges_raw, max=1.0) / 2.0
+                    edges_raw -= torch.clamp(depth_edges_raw, max=1.0) / 2.0
+                    edges_raw = (edges_raw.reshape(H, W, 1).expand(-1, -1, 3).numpy() * 255).astype('uint8')
+                    imageio.imwrite(os.path.join(cur_dir_path, f'edges{edge_detection[i].suffix}_raw.png'), edges_raw)
+                    edge_raw_list.append(edges_raw)
+
+                    edges = torch.where(
+                        depth_edges > 0.0,
+                        0.5 - torch.clamp(depth_edges, max=1.0) / 2.0,
+                        0.5 + torch.clamp(normal_edges, max=1.0) / 2.0)
+                    edges = (edges.reshape(H, W, 1).expand(-1, -1, 3).numpy() * 255).astype('uint8')
+                    imageio.imwrite(os.path.join(cur_dir_path, f'edges{edge_detection[i].suffix}.png'), edges)
+                    edge_list.append(edges)
+
+                elif args.save_edges == 'depth_only':
+                    edges_raw = torch.where(acc_map_mask, torch.full((H * W,), 0.5), torch.ones((H * W,)))
+                    edges_raw = torch.clamp(edges_raw - depth_edges_raw, min=0.0).reshape(H, W, 1).expand(-1, -1, 3)
+                    edges_raw = (edges_raw.numpy() * 255).astype('uint8')
+                    imageio.imwrite(os.path.join(cur_dir_path, f'edges{edge_detection[i].suffix}_raw.png'), edges_raw)
+                    edge_raw_list.append(edges_raw)
+
+                    edges = torch.where(acc_map_mask, torch.full((H * W,), 0.5), torch.ones((H * W,)))
+                    edges = torch.clamp(edges - depth_edges, min=0.0).reshape(H, W, 1).expand(-1, -1, 3)
+                    edges = (edges.numpy() * 255).astype('uint8')
+                    imageio.imwrite(os.path.join(cur_dir_path, f'edges{edge_detection[i].suffix}.png'), edges)
+                    edge_list.append(edges)
+
+            else:
+                result.append([shader_maps[i] for i in range(len(shader_list))])
+
+        edges_raw_list.append(edge_raw_list)
+        edges_list.append(edge_list)
 
         # Draw renders
         if light_debug:
@@ -185,13 +214,19 @@ def npr(dataset, args):
                 imageio.imwrite(os.path.join(cur_dir_path, f'{shader_list[i].name}_debug.png'), shader_debug_map)
             shader_debug_lists.append(shaders_debug_list)
 
-        shaders_list = []
-        for i in range(shader_maps.shape[0]):
-            shader_map = shader_maps[i]  # [bs, 3]
-            shader_map = (shader_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
-            shaders_list.append(shader_map)
-            imageio.imwrite(os.path.join(cur_dir_path, f'{shader_list[i].name}.png'), shader_map)
-        shader_lists.append(shaders_list)
+        variations = []
+        for i, edge_variation in enumerate(result):
+            shaders_list = []
+            for j, variation in enumerate(edge_variation):
+                if edge_detection[i].active and not shader_list[j].has_edges:
+                    shaders_list.append(None)
+                    continue
+                variation = (variation.reshape(H, W, 3).numpy() * 255).astype('uint8')
+                imageio.imwrite(os.path.join(cur_dir_path,
+                                             f'{shader_list[j].name}{edge_detection[i].suffix}.png'), variation)
+                shaders_list.append(variation)
+            variations.append(shaders_list)
+        results.append(variations)
 
         rgb_map = (rgb_map.reshape(H, W, 3).numpy() * 255).astype('uint8')
         rgb_frames_list.append(rgb_map)
@@ -211,7 +246,6 @@ def npr(dataset, args):
             imageio.imwrite(os.path.join(cur_dir_path, 'rgb.png'), rgb_map)
         if args.if_save_depth:
             depth_map = np.concatenate([depth_map, acc_map], axis=2)
-            # depth_map, _ = visualize_depth_numpy(normalized_depth_map.reshape(H, W, 1).numpy(), near_far)
             imageio.imwrite(os.path.join(cur_dir_path, 'depth.png'), depth_map)
         if args.if_save_acc:
             imageio.imwrite(os.path.join(cur_dir_path, 'acc.png'), acc_map.repeat(3, axis=-1))
@@ -268,59 +302,55 @@ def npr(dataset, args):
             x_list.append(x_map)
             y_list.append(y_map)
             z_list.append(z_map)
-        if args.if_save_edges and edge_detection.active:
-            edge_map = torch.full((H*W,), 0.5)
-            edge_map += normal_edge_map / 2.0
-            edge_map -= depth_edge_map / 2.0
-            edge_map = (edge_map.reshape(H, W, 1).expand(-1, -1, 3).numpy() * 255).astype('uint8')
-            imageio.imwrite(os.path.join(cur_dir_path, 'edge map.png'), edge_map)
-            edge_map_list.append(edge_map)
 
-            edge_mask = torch.full((H*W, 3), 0.5)
-            edge_mask[normal_edge_mask] = torch.ones_like(edge_mask)[normal_edge_mask]
-            edge_mask[depth_edge_mask] = torch.zeros_like(edge_mask)[depth_edge_mask]
-            edge_mask = (edge_mask.reshape(H, W, 3).numpy() * 255).astype('uint8')
-            imageio.imwrite(os.path.join(cur_dir_path, 'edge mask.png'), edge_mask)
-            edge_mask_list.append(edge_mask)
+    if args.frame_index == -1:
+        # save videos
+        video_path = os.path.join(args.geo_buffer_path, 'video')
+        os.makedirs(video_path, exist_ok=True)
 
-    video_path = os.path.join(args.geo_buffer_path, 'video')
-    os.makedirs(video_path, exist_ok=True)
+        if args.if_save_rgb_video:
+            imageio.mimsave(os.path.join(video_path, 'rgb_video.mp4'), np.stack(rgb_frames_list), fps=24, macro_block_size=1)
 
-    if args.if_save_rgb_video:
-        imageio.mimsave(os.path.join(video_path, 'rgb_video.mp4'), np.stack(rgb_frames_list), fps=24, macro_block_size=1)
+        if args.if_render_normal:
+            for render_idx in range(len(dataset)):
+                cur_dir_path = os.path.join(args.geo_buffer_path, f'{dataset.split}_{render_idx:0>3d}')
+                normal_map = imageio.v2.imread(os.path.join(cur_dir_path, 'normal.png'))
+                normal_mask = (normal_map[..., -1] / 255) > args.acc_mask_threshold
+                normal_map = normal_map[..., :3] * (normal_mask[..., None] / 255.0) + 255 * (1 - normal_mask[..., None] / 255.0)
 
-    if args.if_render_normal:
-        for render_idx in range(len(dataset)):
-            cur_dir_path = os.path.join(args.geo_buffer_path, f'{dataset.split}_{render_idx:0>3d}')
-            normal_map = imageio.v2.imread(os.path.join(cur_dir_path, 'normal.png'))
-            normal_mask = (normal_map[..., -1] / 255) > args.acc_mask_threshold 
-            normal_map = normal_map[..., :3] * (normal_mask[..., None] / 255.0) + 255 * (1 - normal_mask[..., None] / 255.0)
+                optimized_normal_list.append(normal_map.astype('uint8'))
 
-            optimized_normal_list.append(normal_map.astype('uint8'))
+            imageio.mimsave(os.path.join(video_path, 'render_normal_video.mp4'), np.stack(optimized_normal_list), fps=24, macro_block_size=1)
 
-        imageio.mimsave(os.path.join(video_path, 'render_normal_video.mp4'), np.stack(optimized_normal_list), fps=24, macro_block_size=1)
+        if args.if_save_albedo:
+            imageio.mimsave(os.path.join(video_path, 'aligned_albedo_video.mp4'), np.stack(aligned_albedo_list), fps=24, macro_block_size=1)
+            imageio.mimsave(os.path.join(video_path, 'roughness_video.mp4'), np.stack(roughness_list), fps=24, macro_block_size=1)
 
-    if args.if_save_albedo:
-        imageio.mimsave(os.path.join(video_path, 'aligned_albedo_video.mp4'), np.stack(aligned_albedo_list), fps=24, macro_block_size=1)
-        imageio.mimsave(os.path.join(video_path, 'roughness_video.mp4'), np.stack(roughness_list), fps=24, macro_block_size=1)
+        if args.if_save_xys:
+            imageio.mimsave(os.path.join(video_path, 'xyz.mp4'), np.stack(xyz_list), fps=24, macro_block_size=1)
+            imageio.mimsave(os.path.join(video_path, 'x_pos.mp4'), np.stack(x_list), fps=24, macro_block_size=1)
+            imageio.mimsave(os.path.join(video_path, 'y_pos.mp4'), np.stack(y_list), fps=24, macro_block_size=1)
+            imageio.mimsave(os.path.join(video_path, 'z_pos.mp4'), np.stack(z_list), fps=24, macro_block_size=1)
 
-    if args.if_save_xys:
-        imageio.mimsave(os.path.join(video_path, 'xyz.mp4'), np.stack(xyz_list), fps=24, macro_block_size=1)
-        imageio.mimsave(os.path.join(video_path, 'x_pos.mp4'), np.stack(x_list), fps=24, macro_block_size=1)
-        imageio.mimsave(os.path.join(video_path, 'y_pos.mp4'), np.stack(y_list), fps=24, macro_block_size=1)
-        imageio.mimsave(os.path.join(video_path, 'z_pos.mp4'), np.stack(z_list), fps=24, macro_block_size=1)
+        if args.save_edges != 'none':
+            for i, method in enumerate(edge_detection):
+                if method.active:
+                    imageio.mimsave(os.path.join(video_path, f'edges{method.suffix}_raw.mp4'),
+                                    np.stack([edges[i] for edges in edges_raw_list]), fps=24, macro_block_size=1)
+                    imageio.mimsave(os.path.join(video_path, f'edges{method.suffix}.mp4'),
+                                    np.stack([edges[i] for edges in edges_list]), fps=24, macro_block_size=1)
 
-    if args.if_save_edges and edge_detection.active:
-        imageio.mimsave(os.path.join(video_path, 'edge_map.mp4'), np.stack(edge_map_list), fps=24, macro_block_size=1)
-        imageio.mimsave(os.path.join(video_path, 'edge_mask.mp4'), np.stack(edge_mask_list), fps=24, macro_block_size=1)
+        if args.render_video:
+            for i, shader in enumerate(shader_list):
+                for j, method in enumerate(edge_detection):
+                    if method.active and not shader.has_edges:
+                        continue
+                    imageio.mimsave(os.path.join(video_path, f'{shader.name}{method.suffix}.mp4'),
+                                    np.stack([result[j][i] for result in results]), fps=24, macro_block_size=1)
+                if light_debug:
+                    imageio.mimsave(os.path.join(video_path, f'{shader.name}_debug.mp4'),
+                                    np.stack([debug[i] for debug in shader_debug_lists]), fps=24, macro_block_size=1)
 
-    if args.render_video:
-        for i in range(len(shader_list)):
-            imageio.mimsave(os.path.join(video_path, f'{shader_list[i].name}.mp4'),
-                            np.stack([shader[i] for shader in shader_lists]), fps=24, macro_block_size=1)
-            if light_debug:
-                imageio.mimsave(os.path.join(video_path, f'{shader_list[i].name}_debug.mp4'),
-                                np.stack(shader_debug[i] for shader_debug in shader_debug_lists), fps=24, macro_block_size=1)
 
 
 if __name__ == "__main__":
@@ -343,7 +373,7 @@ if __name__ == "__main__":
     args.if_save_albedo = True
     args.if_save_albedo_gamma_corrected = True
     args.if_save_xys = True
-    args.if_save_edges = True
+    args.save_edges = 'all'
     args.debug_light_size = 0.005
     args.acc_mask_threshold = 0.5
     args.if_render_normal = True

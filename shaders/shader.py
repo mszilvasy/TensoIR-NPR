@@ -9,6 +9,7 @@ class Shader:
         self.light_pos = torch.Tensor(args.light_pos).to(device)
         self.light_rgb = torch.Tensor(args.light_rgb).to(device)
         self.shininess = args.shininess
+        self.has_edges = False
 
         if self.light_type == 'infinity':
             self.light_pos = safe_l2_normalize(self.light_pos, dim=-1)
@@ -26,5 +27,5 @@ class Shader:
         cos[mask] = torch.clamp(torch.sum(normal * h, dim=-1, keepdim=True), min=0.0)[mask]  # [bs, 1]
         return self.light_rgb[None, :] * (1.0 - roughness) * (cos ** self.shininess)
 
-    def draw_edges(self, rgb, depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask):
+    def draw_edges(self, rgb, depth_edges, normal_edges):
         return rgb

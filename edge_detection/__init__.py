@@ -8,6 +8,7 @@ edge_detection_dict = {'normals': normals, 'canny': canny, 'sobel': sobel, 'geom
 class EdgeDetection:
     def __init__(self, method, ckpt, **kwargs):
         self.active = method != 'none'
+        self.suffix = "_" + method if self.active else ""
         if method == 'scan':
             self.scan_edges = ScanEdges(**kwargs)
             self.scan_edges.load(ckpt)
@@ -17,10 +18,14 @@ class EdgeDetection:
 
     def scan(self, *args, **kwargs):
         H, W = kwargs['hw']
-        depth_edge_mask, depth_edge_map = self.scan_edges(kwargs['rays'], (H, W),
-                                                          depth_weight=kwargs['scale'])  # [H, W], [H, W, 3]
-        depth_edge_mask = depth_edge_mask.reshape(H * W).cpu()
-        depth_edge_map = depth_edge_map.reshape(H * W).cpu()
-        normal_edge_mask = torch.full((H*W,), False)  # [H*W]
-        normal_edge_map = torch.zeros((H*W,))  # [H*W]
-        return depth_edge_map, depth_edge_mask, normal_edge_map, normal_edge_mask
+        depth_edges_raw, depth_edges = self.scan_edges(kwargs['rays'], (W, H),
+                                                       acc_threshold=args[0],
+                                                       inclusion_threshold=args[1],
+                                                       near_weight=args[2],
+                                                       far_weight=args[3],
+                                                       line_style=args[4] if len(args) > 4 else 'euclidean')
+        depth_edges_raw = depth_edges_raw.reshape(H * W).cpu()
+        depth_edges = depth_edges.reshape(H * W).cpu()
+        normal_edges_raw = torch.zeros((H * W,))  # [H*W]
+        normal_edges = torch.zeros((H * W,))  # [H*W]
+        return depth_edges_raw, depth_edges, normal_edges_raw, normal_edges

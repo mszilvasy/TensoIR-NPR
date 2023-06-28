@@ -1,12 +1,12 @@
 dataset_name = tensoIR_unknown_rotated_lights
-datadir = ./data/TensoIR_Synthetic/lego
-hdrdir = ./data/Environment_Maps/high_res_envmaps_1k
-expname =  lego_relighting
+datadir = ./data/TensoIR_Synthetic/hotdog
+hdrdir = ./data/Environment_Maps/high_res_envmaps_2k
+expname = hotdog_relighting
 basedir = ./log/log_relighting_test
 add_timestamp = 1
 downsample_train = 1
 downsample_test = 1
-geo_buffer_path = ./npr/lego
+geo_buffer_path = ./npr/hotdog
 
 n_iters = 80000
 batch_size = 4096
@@ -57,29 +57,29 @@ light_name = sunset
 albedo_smoothness_loss_weight = 0.0001
 roughness_smoothness_loss_weight = 0.0002
 
-frame_index = -1 # Used in the paper: 13 36
+frame_index = -1 # Used in the paper: 98 140 196
 
-shaders = [gooch] # [specular_only, blinn_phong, gooch, toon]
+shaders = [toon]
 
 light = point
-light_pos = [-0.8, 1.2, 1.0]
+light_pos = [-0.75, 0.5, 1.0]
 light_rgb = [1.0, 1.0, 1.0]
 light_debug = [1.0, 1.0, 0.0]
 
 ambience = 0.1
 shininess = 20.0
 
-edge_detection = [sobel] # [canny, sobel, scan, none]
-edge_detection_args = [[0.01, 0.5]] # [[0.03, 0.06, 0.6, 0.99], [0.01, 0.5], [0.8, 0.5, 1.5, 1.0], []]
+edge_detection = [scan, sobel, none]
+edge_detection_args = [[0.6, 0.1, 2, 1], [0.02, 0.5], []]
 normal_edges = 0.1
 
 blinn_phong_diffuse = 1.0
 blinn_phong_specular = 0.8
 
-gooch_b = 0.5
-gooch_y = 0.25
-gooch_alpha = 0.25
-gooch_beta = 0.55
+gooch_b = 0.1
+gooch_y = 0.05
+gooch_alpha = 0.35
+gooch_beta = 0.75
 gooch_specular = 1.0
 
 toon_cutoff = 0.4
